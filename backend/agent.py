@@ -1,10 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -43,33 +45,28 @@ from backend.models import (
     WhatIfTrajectoryResponse,
 )
 
-def _resolve_db_path() -> Path:
-    configured_path = os.getenv("PLACEMENTPRO_DB_PATH", "").strip()
-    if configured_path:
-        return Path(configured_path)
-    # Vercel serverless functions can only write to /tmp at runtime.
-    if os.getenv("VERCEL") == "1":
-        return Path("/tmp/placementpro.db")
-    repo_default = Path(__file__).resolve().parent / "placementpro.db"
-    # OneDrive-synced SQLite files are prone to lock contention on Windows.
-    if "onedrive" in str(repo_default).lower():
-        local_app_data = Path(os.getenv("LOCALAPPDATA", str(Path.home())))
-        return local_app_data / "PlacementPro" / "placementpro.db"
-    return repo_default
+_LOCAL_APP_DATA = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+DB_PATH = _LOCAL_APP_DATA / "PlacementPro" / "placementpro.db"
+
+# Reentrant lock ensures only one thread accesses SQLite at a time.
+# This is the only reliable way to prevent "database is locked" errors
+# when FastAPI runs sync endpoints concurrently in a thread pool.
+_db_lock = threading.RLock()
 
 
-DB_PATH = _resolve_db_path()
-
-
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA busy_timeout = 10000;")
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    with _db_lock:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _now_iso() -> str:
@@ -532,8 +529,15 @@ def _send_email_dispatch(to_email: str, subject: str, html_content: str) -> tupl
     return "SIMULATED", "none"
 
 
+_engine_initialized = False
+
 def initialize_engine() -> None:
+    global _engine_initialized
+    if _engine_initialized:
+        return
+
     with _connect() as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS students (
@@ -634,6 +638,8 @@ def initialize_engine() -> None:
         if student_count == 0:
             _seed_initial_data(conn)
         _ensure_seed_consistency(conn)
+
+    _engine_initialized = True
 
 
 def _seed_initial_data(conn: sqlite3.Connection) -> None:
@@ -1836,10 +1842,52 @@ def run_agentic_cycle() -> DecisionCycleResponse:
         return DecisionCycleResponse(status="success", summary=summary, decisions=decisions)
 
 
+def _build_flight_risk_alerts_readonly(conn: sqlite3.Connection) -> list[FlightRiskAlert]:
+    """Read-only version of flight risk alerts - reads from DB without writing."""
+    students = _fetch_students(conn)
+    alerts: list[FlightRiskAlert] = []
+    for student in students:
+        if not student["accepted_offer"]:
+            continue
+        best_alt = conn.execute(
+            """
+            SELECT a.*, c.company_name
+            FROM applications a
+            JOIN companies c ON c.id = a.company_id
+            WHERE a.student_id = ?
+              AND c.company_name NOT LIKE ?
+            ORDER BY a.match_score DESC, a.selection_probability DESC
+            LIMIT 1
+            """,
+            (student["id"], f"%{student['accepted_offer'].split('(')[0].strip()}%"),
+        ).fetchone()
+        if not best_alt:
+            continue
+        risk_percent = min(99, 65 + max(0, best_alt["match_score"] - 75) * 2 + (student["mock_score"] // 8))
+        if risk_percent < 70:
+            continue
+        risk_label = "CRITICAL" if risk_percent >= 85 else "HIGH"
+        reasoning = (
+            f"Accepted offer is {student['accepted_offer']} but {best_alt['company_name']} "
+            f"match is {best_alt['match_score']}% with selection probability {best_alt['selection_probability']}%."
+        )
+        action = f"Agent flagged potential flight risk for {student['name']}."
+        alerts.append(
+            FlightRiskAlert(
+                student_name=student["name"],
+                current_offer=student["accepted_offer"],
+                risk_level=f"{risk_label} ({risk_percent}%)",
+                agent_reasoning=reasoning,
+                autonomous_action=action,
+            )
+        )
+    return alerts
+
+
 def get_live_insights() -> DashboardLiveInsightsResponse:
     initialize_engine()
     with _connect() as conn:
-        _, _, flight_risk_alerts = _run_cycle_engine(conn)
+        flight_risk_alerts = _build_flight_risk_alerts_readonly(conn)
 
         campaign_row = conn.execute(
             """
@@ -1901,7 +1949,7 @@ def get_live_insights() -> DashboardLiveInsightsResponse:
 def get_admin_analytics() -> AdminAnalyticsResponse:
     initialize_engine()
     with _connect() as conn:
-        _, _, flight_risk_alerts = _run_cycle_engine(conn)
+        flight_risk_alerts = _build_flight_risk_alerts_readonly(conn)
 
         distribution_row = conn.execute(
             """
@@ -2011,7 +2059,6 @@ def get_admin_analytics() -> AdminAnalyticsResponse:
 def get_student_journey(student_id: int) -> StudentJourneyResponse:
     initialize_engine()
     with _connect() as conn:
-        _run_cycle_engine(conn)
 
         student_row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
         if student_row is None:
