@@ -73,6 +73,24 @@ class StudentIntervention(BaseModel):
     created_at: str
 
 
+class QuizQuestion(BaseModel):
+    question: str
+    difficulty: str
+    expected_topics: list[str]
+    starter_hint: str
+
+
+class AutonomousQuiz(BaseModel):
+    quiz_id: int
+    token: str
+    company: str
+    role: str
+    topic: str
+    delivery_status: str
+    created_at: str
+    questions: list[QuizQuestion]
+
+
 class StudentProfileSnapshot(BaseModel):
     id: int
     name: str
@@ -91,6 +109,7 @@ class StudentJourneyData(BaseModel):
     profile: StudentProfileSnapshot
     recommendations: list[RecommendationInsight]
     interventions: list[StudentIntervention]
+    autonomous_quizzes: list[AutonomousQuiz]
     journey_events: list[StudentJourneyRecord]
 
 
@@ -113,13 +132,24 @@ class AtRiskStudent(BaseModel):
     next_action: str
 
 
+class TopRecommendation(BaseModel):
+    student_name: str
+    company: str
+    role: str
+    match_score: int
+    selection_probability: int
+    status: str
+
+
 class AdminAnalyticsData(BaseModel):
     cohort_distribution: CohortDistribution
     total_students: int
     total_companies: int
     interventions_triggered: int
     autonomous_actions_today: int
+    applications_status_snapshot: dict[str, int]
     at_risk_students: list[AtRiskStudent]
+    top_recommendations: list[TopRecommendation]
     communication_logs: list[CommunicationLog]
     flight_risk_alerts: list[FlightRiskAlert]
 
@@ -157,3 +187,93 @@ class DecisionCycleResponse(BaseModel):
 class CompanyRequirementsResponse(BaseModel):
     status: str
     data: list[CompanyRequirementRecord]
+
+
+class SimulationActionRequest(BaseModel):
+    student_id: int
+    action_type: Literal[
+        "MISS_DEADLINE",
+        "ADD_SKILL",
+        "VERIFY_SKILL",
+        "UPDATE_MOCK_SCORE",
+        "UPDATE_INTERVIEW_SCORE",
+        "SET_ACCEPTED_OFFER",
+        "CLEAR_ACCEPTED_OFFER",
+    ]
+    value: str | int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SimulationActionResult(BaseModel):
+    student_id: int
+    action_type: str
+    effect: str
+    profile: StudentProfileSnapshot
+
+
+class SimulationActionResponse(BaseModel):
+    status: str
+    result: SimulationActionResult
+
+
+class WhatIfTrajectoryRequest(BaseModel):
+    student_id: int
+    prompt: str = Field(min_length=3, max_length=500)
+
+
+class WhatIfProfileDelta(BaseModel):
+    skills_added: list[str] = Field(default_factory=list)
+    verified_skills_added: list[str] = Field(default_factory=list)
+    backlogs_delta: int = 0
+    deadlines_missed_delta: int = 0
+    mock_score_delta: int = 0
+    interview_score_delta: int = 0
+    accepted_offer_cleared: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class WhatIfCompanyImpact(BaseModel):
+    company: str
+    role: str
+    base_match_score: int
+    simulated_match_score: int
+    base_selection_probability: int
+    simulated_selection_probability: int
+    delta_probability: int
+    base_decision: str
+    simulated_decision: str
+    key_reasoning: str
+
+
+class WhatIfTrajectoryData(BaseModel):
+    student_id: int
+    prompt: str
+    base_profile: StudentProfileSnapshot
+    simulated_profile: StudentProfileSnapshot
+    profile_delta: WhatIfProfileDelta
+    summary: str
+    impacts: list[WhatIfCompanyImpact]
+
+
+class WhatIfTrajectoryResponse(BaseModel):
+    status: str
+    data: WhatIfTrajectoryData
+
+
+class DemoShowcaseData(BaseModel):
+    before: AdminAnalyticsData
+    after: AdminAnalyticsData
+    live_after: DashboardData
+    steps_executed: list[str]
+    cycle_summary: DecisionCycleSummary
+    highlighted_changes: list[str]
+
+
+class DemoShowcaseResponse(BaseModel):
+    status: str
+    data: DemoShowcaseData
+
+
+class QuizDetailResponse(BaseModel):
+    status: str
+    data: AutonomousQuiz
