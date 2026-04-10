@@ -46,7 +46,16 @@ from backend.models import (
 )
 
 _LOCAL_APP_DATA = Path(os.getenv("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
-DB_PATH = _LOCAL_APP_DATA / "PlacementPro" / "placementpro.db"
+
+
+def _resolve_db_path() -> Path:
+    raw = os.getenv("PLACEMENTPRO_DB_PATH", "").strip()
+    if raw:
+        return Path(raw)
+    return _LOCAL_APP_DATA / "PlacementPro" / "placementpro.db"
+
+
+DB_PATH = _resolve_db_path()
 
 # Reentrant lock ensures only one thread accesses SQLite at a time.
 # This is the only reliable way to prevent "database is locked" errors

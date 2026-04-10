@@ -1,0 +1,16 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# After first deploy, add secrets in the Render dashboard (Environment):
+# PLACEMENTPRO_* API keys, PLACEMENTPRO_FRONTEND_BASE_URL = your Vercel URL, etc.
+
+services:
+  - type: web
+    name: placementpro-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"

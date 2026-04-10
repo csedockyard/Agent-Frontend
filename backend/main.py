@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from fastapi.responses import FileResponse
 
 from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from backend.agent import (
     apply_simulation_action,
@@ -30,8 +33,6 @@ from backend.models import (
     WhatIfTrajectoryRequest,
     WhatIfTrajectoryResponse,
 )
-
-load_dotenv(Path(__file__).resolve().parent / ".env")
 
 app = FastAPI(title="PlacementPro Intelligence Hub")
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
